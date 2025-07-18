@@ -1,11 +1,30 @@
 from curl_cffi import requests
 import hashlib, os, random
-from fastapi import FastAPI, Request, APIRouter
+from fastapi import FastAPI, Request, HTTPException, status, Depends, APIRouter
 from browserforge.headers import HeaderGenerator
 from faker import Faker
 from bs4 import BeautifulSoup
 import traceback
 
+REQUEST_LIMIT = 3000
+
+async def limit_requests(request: Request):
+    """
+    Dependency that bumps a global counter and
+    rejects once we hit REQUEST_LIMIT.
+    """
+    # Initialize on first access
+    if not hasattr(request.app.state, "req_count"):
+        request.app.state.req_count = 0
+
+    if request.app.state.req_count >= REQUEST_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Request limit of {REQUEST_LIMIT} reached"
+        )
+
+    request.app.state.req_count += 1
+    
 def generate_random_device_id():
     return hashlib.sha256(os.urandom(32)).hexdigest()[:random.randint(8, 36)]
 
@@ -18,7 +37,10 @@ def cap(string: str, start: str, end: str) -> str:
     except IndexError:
         raise None
     
-auth_check = APIRouter(prefix="/auth_check")
+auth_check = APIRouter(
+    prefix="/auth_check",
+    dependencies=[Depends(limit_requests)]  # ← apply to **all** routes in this router
+)
 @auth_check.get("/")
 async def tokenize_card(request: Request):
 
