@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 import traceback
 
 # Global request counter - simple and effective
-REQUEST_LIMIT = 2000
+REQUEST_LIMIT = 3000
 request_count = 0
 
 async def limit_requests():
@@ -69,6 +69,8 @@ async def tokenize_card(request: Request):
         mm = lista[1]
         yy = lista[2]
         cv = lista[3]
+        if len(yy) == 2:
+            yy = f"20{yy}"
 
         fake = Faker("en_US")
         headers_generator = HeaderGenerator()
