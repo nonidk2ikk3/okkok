@@ -1,11 +1,24 @@
 from curl_cffi import requests
 import hashlib, os, random
 from fastapi import FastAPI, Request, HTTPException, status, Depends, APIRouter
-from browserforge.headers import HeaderGenerator
 from faker import Faker
 from bs4 import BeautifulSoup
 import traceback
 from faker import Faker
+from browserforge.headers import HeaderGenerator
+import asyncio
+
+fake = Faker("en_US")
+
+
+
+
+
+def generate_random_email():
+    domains = ["gmail.com"]
+    name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=26))
+    domain = random.choice(domains)
+    return f"{name}@{domain}"
 # Global request counter - simple and effective
 REQUEST_LIMIT = 5000
 request_count = 0
